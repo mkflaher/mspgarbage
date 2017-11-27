@@ -2,20 +2,24 @@
 #include <math.h> //for trig functions
 //Uses a combination of code from the original sensor unit and the servo multiplexing code for the robot arm.
 unsigned int echo;
-int mode;
-int pw[4] = {1500, 1500, 1500, 1500};
+int mode = 0;
+int pw[4] = {1500, 1500, 2850, 1500};
 int main(void){
 	WDTCTL = WDTPW + WDTHOLD; //stop wdt
+	P1IE = 0; //prevent premature interrupts
 	P2DIR = 0x0F; //P2.0 to P2.3 (four servos) - this should always be on
 	TA1CTL = TASSEL_2 + MC_1 + ID_0;
+	  TA1CCTL0 = CCIE;
+	  TA1CCTL1 = CCIE;
 	TA1CCR0 = 5000; //period of PWM
 	TA1CCR1 = 1000; //arbitrary value for PWM
 	_BIS_SR(GIE);
+	__delay_cycles(1000000);
 	for(;;){
 		switch(mode){
 			case 0: sweep();
 			break;
-			case 1: move();
+			case 1: reach();
 			break;
 			case 2: clamp();
 			break;
@@ -23,9 +27,13 @@ int main(void){
 			break;
 			case 4: wait();
 			break;
-			case 5: release();
+			case 5: rel();
 			break;
 		}
+	if(mode!= 0){
+	P1DIR |= BIT1;
+    	P1OUT |= BIT1;
+   }
 	}
 
 	return 0;
@@ -38,6 +46,7 @@ void sweep(void){
 	//this should be the only subroutine where P1 and TA0 interrupts are enabled
 	P1DIR = BIT1 + BIT6; //P1.1 for TRIG, 1.6 for LED2
 	P1REN |= BIT3 + BIT4; //P1.3 for BTN, P1.4 for ECHO
+  	P1OUT = BIT3; //get rid of this when using the 555
 	P1IE |= BIT3; //enable interrupt for P1.3, P1.4
 	P1IES &= ~BIT4; //make sure this interrupts on rising edge
 	P1IFG &= ~(BIT2 + BIT3 + BIT4); //clear P1.2, P1.3, P1.4 interrupt flag
@@ -45,8 +54,9 @@ void sweep(void){
 	P1SEL2 &= ~BIT2;
 
 	//idle position of the arm
-	pw[1] = 2500;
-	pw[2] = 2500;
+	pw[1] = 1550;
+	pw[2] = 2850;
+ 	pw[3] = 1000; //clamp open
 
 	int inc = 1; //decide whether to increment or decrement
 	while(mode==0){
@@ -66,7 +76,7 @@ void sweep(void){
 	
 }
 
-void move(void){
+void reach(void){
 	//in this subroutine, turn off P1 and TA0 interrupts
 	//keep TA1 interrupts on
 	TA0CTL = MC_0; //make sure TA0 is turned off
@@ -76,49 +86,60 @@ void move(void){
 
 	float l1 = 11.5; //first segment (cm)
 	float l2 = 23; //second segment (cm)
-	float length = echo / 58; //distance of object from sensor (cm)
+	float len = echo / 58; //distance of object from sensor (cm)
 
-	float theta_2 = acos(-(length*length - l1*l1 - l2*l2)/(2*l1*l2))*180.0/M_PI; //angle of second joint from straight wrt 1st seg. note: need to convert from rads to deg
-	float theta_1 = (180.0 - theta_2)/2.0; //angle of first joint wrt floor (in deg)
+	float theta_2 = acos((len*len - l1*l1 - l2*l2)/(-2*l1*l2))*180.0/M_PI; //angle of second joint from straight wrt 1st seg. note: need to convert from rads to deg
+	float phi_2 = 180.0 - theta_2; //angle wrt the vertical (use this one for second joint)
+	float theta_1 = acos((l2*l2 - l1*l1 - len*len)/(-2*l1*len))*180.0/M_PI; //Triangle is scalene, not isoceles - can't just do (180-theta_2)/2
 
 
 	pw[3] = 1000; //make sure clamp is open if not already.
-	pw[1] = 2300 - (int)(theta_1*1000/90); //round to int for valid pulse width
+	pw[1] = (int)(theta_1*1000/90); //round to int for valid pulse width
 	__delay_cycles(1000000);
-	pw[2] = 1500 + (int)(theta_2*100/90);
-	//Pulse widths for reaching - may need to change these if they don't work.
 
+  if(pw[1] > 30000){
+    P1OUT |= BIT6;
+  }
+
+	pw[2] = 2350 + (int)(phi_2*1000/90); //still not quite sure how to get this right
+ 	if(pw[2] > 3000){
+    		pw[3] = 3000; //prevent ta1ccr1 overflow
+  	}
+  
+ 	__delay_cycles(1000000);
 
 	mode = 2; //once done moving to position, advance to clamping
 	
 }
 
 void clamp(void){
-	//sean got the cl
 	pw[3] = 3000; //close the clamp
 	__delay_cycles(1000000);
+
 	mode = 3;
 }
 void lift(void){
 	//this subroutine will bring the arm to a position to drop in the cart
 	pw[0] = 1350; //take arm to dumping sector
-	pw[1] = 2000; //extend arm
-	pw[2] = 1500; //straighten second segment
+	pw[1] = 1350; //extend arm
+	pw[2] = 2350; //straighten second segment
 	__delay_cycles(1000000);
+
 	mode = 4;
 }
 void wait(void){
 	//once we know the cart is there, release
 	//if we use the 30 degree dumping sector, we can use the ultrasonic sensor to determine if the cart is available
-	P1IE |= BIT3; //re-enable P1.3 interrupt for ultrasonic sensor
+	__delay_cycles(1000000);
 	while(mode==3){
 		
 	}
 	mode  = 5;
 }
-void release(void){
+void rel(void){
 	//let go of object, go back to sweeping phase
 	pw[3] = 1000; //release clamp
+	 __delay_cycles(1000000);
 	mode = 0;
 }
 
@@ -166,16 +187,10 @@ __interrupt void TA0_ISR(void){
 __interrupt void TA0_CCI1A_ISR(void){
 	echo = TA0CCR1;
 	if(echo<2000){ //2 mS is about 1 ft
-		P1OUT |= BIT6;
 		if(mode==0){ //if looking for trash
 			mode = 1; //advance to move into position
 		}
-		else if(mode==4 && echo < 500){ //if looking for cart and it's close enough
-			mode = 5; //proceed to release stage
-		}
-	}
-	else{
-		P1OUT &= ~BIT6;
+		
 	}
 	TA0CCTL1 = 0;
 	TA0CTL = MC_0;

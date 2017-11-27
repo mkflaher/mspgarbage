@@ -1,7 +1,7 @@
 #include <msp430.h>
  
 // PWM channels duty cycle array
-int pw[] = {3000,1300,3000,2500};
+int pw[] = {850,1300,2350,3000};
 int n = 0;
 int main( void )
 {
@@ -24,11 +24,6 @@ int main( void )
 	int channel;
 	while(1)
 	{
-   		pw[3] -= 1;
-		if(pw[3] < 2000){
-			pw[3] = 3000;
-		}
-    		__delay_cycles(5000);
 	}
  
 
